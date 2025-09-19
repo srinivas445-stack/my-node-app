@@ -1,0 +1,33 @@
+[
+  [
+    "ARM-IT-DESK-001",
+    {
+      "id": "SRINIVASULU",
+      "name": "ARM-IT-DESK-001",
+      "location": "WORKSTATION",
+      "department": "IT",
+      "desktopSetupDate": "2025-09-18",
+      "assetPassword": "$2b$10$pQ3gI6M68AlI.p/AfxfhOe18eQZm9.3HCT4QAqZWXC725NtzGq3Xy",
+      "plaintextPassword": "Armwest@2025",
+      "scanHistory": [
+        {
+          "timestamp": "2025-09-18T10:32:33.136Z",
+          "device": "Mozilla/5.0 (iPhone; CPU iPhone OS 26_0_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/140.0.7339.122 Mobile/15E148 Safari/604.1"
+        }
+      ]
+    }
+  ],
+  [
+    "ARM-ACC-DESK-002",
+    {
+      "id": "LAKSHMI",
+      "name": "ARM-ACC-DESK-002",
+      "location": "WORKSTATION",
+      "department": "ACC",
+      "desktopSetupDate": "2025-09-18",
+      "assetPassword": "$2b$10$LsabHExIPfzaSl6zcp7xge8H5AMqMjWZu9AstEzMmQuIxfESxLDRC",
+      "plaintextPassword": "Armwest@2025",
+      "scanHistory": []
+    }
+  ]
+]
