@@ -64,9 +64,19 @@ function generateSessionId() {
   return Math.random().toString(36).substring(2) + Date.now().toString(36);
 }
 
-// Get base URL
+// Get base URL with automatic local IP detection
 function getNetworkIP() {
-  return process.env.BASE_URL || `http://localhost:${port}`;
+  if (process.env.BASE_URL) return process.env.BASE_URL;
+
+  const interfaces = os.networkInterfaces();
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name]) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        return `http://${iface.address}:${port}`;
+      }
+    }
+  }
+  return `http://localhost:${port}`;
 }
 
 // Login page
@@ -836,7 +846,9 @@ app.get('/qr/:id/download', async (req, res) => {
 
 // Delete asset (admin only)
 app.get('/delete/:id', async (req, res) => {
+  console.log(`Delete request received for asset ID: ${req.params.id}`);
   if (!isAuthenticated(req)) {
+    console.log('Delete failed: Not authenticated');
     res.redirect('/');
     return;
   }
@@ -864,9 +876,32 @@ app.get('/delete/:id', async (req, res) => {
     return;
   }
 
-  assets.delete(req.params.id);
-  await saveAssets(assets);
-  res.redirect('/list');
+  try {
+    assets.delete(req.params.id);
+    await saveAssets(assets);
+    console.log(`Successfully deleted asset ID: ${req.params.id}`);
+    res.redirect('/list');
+  } catch (error) {
+    console.error(`Delete error for asset ID ${req.params.id}:`, error);
+    res.status(500).send(`
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Error</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+      </head>
+      <body class="bg-gray-100 min-h-screen flex items-center justify-center">
+        <div class="text-center bg-white p-8 rounded-2xl shadow-lg">
+          <h2 class="text-2xl font-bold text-red-600 mb-4">Error deleting asset</h2>
+          <p class="text-gray-600 mb-4">Please try again or check server logs.</p>
+          <a href="/list" class="text-blue-600 hover:underline">Back to Asset List</a>
+        </div>
+      </body>
+      </html>
+    `);
+  }
 });
 
 // Browser-based QR code scanning
