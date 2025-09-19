@@ -55,6 +55,7 @@ const sessions = new Map();
 // Middleware to check if user is authenticated
 function isAuthenticated(req) {
   const sessionId = req.headers.cookie ? req.headers.cookie.split('sessionId=')[1]?.split(';')[0] : null;
+  console.log(`Checking authentication: sessionId=${sessionId}, exists=${sessions.has(sessionId)}`);
   return sessionId && sessions.has(sessionId);
 }
 
@@ -63,30 +64,14 @@ function generateSessionId() {
   return Math.random().toString(36).substring(2) + Date.now().toString(36);
 }
 
-// Get network IP address
+// Get base URL
 function getNetworkIP() {
-  const interfaces = os.networkInterfaces();
-  for (const name of Object.keys(interfaces)) {
-    for (const iface of interfaces[name]) {
-      if (iface.family === 'IPv4' && !iface.internal && iface.address.startsWith('192.168.')) {
-        return iface.address;
-      }
-    }
-  }
-  for (const name of Object.keys(interfaces)) {
-    for (const iface of interfaces[name]) {
-      if (iface.family === 'IPv4' && !iface.internal) {
-        return iface.address;
-      }
-    }
-  }
-  return 'localhost';
+  return process.env.BASE_URL || `http://localhost:${port}`;
 }
 
 // Login page
 app.get('/', (req, res) => {
-  const networkIP = getNetworkIP();
-  const baseUrl = `http://${networkIP}:${port}`;
+  const baseUrl = getNetworkIP();
   if (isAuthenticated(req)) {
     res.send(`
       <!DOCTYPE html>
@@ -128,10 +113,9 @@ app.get('/', (req, res) => {
           <div class="bg-white border border-gray-200 p-6 rounded-lg mb-6 shadow-sm">
             <h3 class="text-lg font-semibold text-gray-800 mb-3">Network Access</h3>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <p class="text-sm text-gray-600"><strong>Desktop:</strong> <span class="font-mono bg-gray-100 p-1 rounded">http://localhost:${port}</span></p>
-              <p class="text-sm text-gray-600"><strong>Mobile:</strong> <span class="font-mono bg-gray-100 p-1 rounded">${baseUrl}</span></p>
+              <p class="text-sm text-gray-600"><strong>Desktop:</strong> <span class="font-mono bg-gray-100 p-1 rounded">${baseUrl}</span></p>
             </div>
-            <p class="text-xs text-gray-500 mt-3">Ensure mobile is on the same WiFi. Install as an app for easier access!</p>
+            <p class="text-xs text-gray-500 mt-3">Install as an app for easier access!</p>
           </div>
 
           <div class="bg-blue-50 p-4 rounded-lg mb-6">
@@ -273,7 +257,7 @@ app.get('/qr/all', async (req, res) => {
     return;
   }
 
-  const baseUrl = `http://${getNetworkIP()}:${port}`;
+  const baseUrl = getNetworkIP();
   let qrCodesHtml = '';
 
   if (assets.size === 0) {
@@ -370,8 +354,7 @@ app.get('/list', (req, res) => {
     res.redirect('/');
     return;
   }
-  const networkIP = getNetworkIP();
-  const baseUrl = `http://${networkIP}:${port}`;
+  const baseUrl = getNetworkIP();
   let assetList = '';
   for (const [id, asset] of assets) {
     const scans = asset.scanHistory ? asset.scanHistory.length : 0;
@@ -380,7 +363,7 @@ app.get('/list', (req, res) => {
         <td class="px-4 py-3">${asset.id}</td>
         <td class="px-4 py-3">${asset.name}</td>
         <td class="px-4 py-3">${asset.location}</td>
-        <td class="px-4 py-3">${asset.plaintextPassword || 'Not Set'} <a href="${baseUrl}/change-password/${id}" class="text-blue-600 hover:underline">(Change)</a></td>
+        <td class="px-4 py-3">******** <a href="${baseUrl}/change-password/${id}" class="text-blue-600 hover:underline">(Change)</a></td>
         <td class="px-4 py-3">${scans}</td>
         <td class="px-4 py-3 space-x-2">
           <a href="${baseUrl}/asset/${id}" class="text-blue-600 hover:underline">View</a>
@@ -559,7 +542,6 @@ app.post('/change-password/:id', async (req, res) => {
   }
 
   asset.assetPassword = await bcrypt.hash(newPassword, 10);
-  asset.plaintextPassword = newPassword; // Insecure: Storing plaintext
   await saveAssets(assets);
   res.send(`
     <!DOCTYPE html>
@@ -609,7 +591,7 @@ app.post('/generate', async (req, res) => {
   }
 
   if (assets.has(name)) {
-    const baseUrl = `http://${getNetworkIP()}:${port}`;
+    const baseUrl = getNetworkIP();
     res.send(`
       <!DOCTYPE html>
       <html lang="en">
@@ -640,13 +622,12 @@ app.post('/generate', async (req, res) => {
     department: department || '',
     desktopSetupDate: desktopSetupDate || '',
     assetPassword: await bcrypt.hash(assetPassword, 10),
-    plaintextPassword: assetPassword, // Insecure: Storing plaintext
     scanHistory: []
   };
   assets.set(name, asset);
   await saveAssets(assets);
 
-  const baseUrl = `http://${getNetworkIP()}:${port}`;
+  const baseUrl = getNetworkIP();
   const url = `${baseUrl}/asset/${name}?scan=true`;
 
   QRCode.toDataURL(url, { 
@@ -749,7 +730,7 @@ app.get('/qr/:id', (req, res) => {
     return;
   }
 
-  const baseUrl = `http://${getNetworkIP()}:${port}`;
+  const baseUrl = getNetworkIP();
   const url = `${baseUrl}/asset/${asset.name}?scan=true`;
   
   QRCode.toDataURL(url, { 
@@ -841,11 +822,16 @@ app.get('/qr/:id/download', async (req, res) => {
     return;
   }
 
-  const baseUrl = `http://${getNetworkIP()}:${port}`;
+  const baseUrl = getNetworkIP();
   const url = `${baseUrl}/asset/${asset.name}?scan=true`;
-  const qrBuffer = await QRCode.toBuffer(url, { width: 300, margin: 2 });
-  res.setHeader('Content-Disposition', `attachment; filename=qr-${asset.name}.png`);
-  res.type('image/png').send(qrBuffer);
+  try {
+    const qrBuffer = await QRCode.toBuffer(url, { width: 300, margin: 2 });
+    res.setHeader('Content-Disposition', `attachment; filename=qr-${asset.name}.png`);
+    res.type('image/png').send(qrBuffer);
+  } catch (err) {
+    console.error(`QR download error for asset ID ${req.params.id}:`, err);
+    res.status(500).send('Error generating QR code');
+  }
 });
 
 // Delete asset (admin only)
@@ -880,23 +866,7 @@ app.get('/delete/:id', async (req, res) => {
 
   assets.delete(req.params.id);
   await saveAssets(assets);
-  res.send(`
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>Asset Deleted</title>
-      <script src="https://cdn.tailwindcss.com"></script>
-    </head>
-    <body class="bg-gray-100 min-h-screen flex items-center justify-center">
-      <div class="text-center bg-white p-8 rounded-2xl shadow-lg">
-        <h2 class="text-2xl font-bold text-green-600 mb-4">Asset ${asset.name} deleted successfully</h2>
-        <a href="/list" class="text-blue-600 hover:underline">Back to Asset List</a>
-      </div>
-    </body>
-    </html>
-  `);
+  res.redirect('/list');
 });
 
 // Browser-based QR code scanning
@@ -1219,17 +1189,13 @@ app.get('/api/asset/:id', (req, res) => {
     res.status(404).json({ error: 'Asset not found', id: req.params.id });
     return;
   }
-  // Avoid sending plaintext password in API response
-  const { plaintextPassword, ...safeAsset } = asset;
-  res.json(safeAsset);
+  res.json(asset);
 });
 
 // Start server
 const server = app.listen(port, '0.0.0.0', () => {
-  const networkIP = getNetworkIP();
-  console.log(`Server running at:`);
-  console.log(`Desktop: http://localhost:${port}`);
-  console.log(`Mobile:  http://${networkIP}:${port}`);
+  const baseUrl = getNetworkIP();
+  console.log(`Server running at: ${baseUrl}`);
   console.log(`Install as PWA: Open in Chrome, click "Add to Home Screen" (mobile) or "+" in address bar (desktop)`);
   console.log(`For public access (required for PWA on mobile):`);
   console.log(`1. Deploy to Render.com for HTTPS`);
