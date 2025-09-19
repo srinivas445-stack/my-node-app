@@ -1,6 +1,6 @@
 {
-  "name": "Asset QR Code Generator",
-  "short_name": "Asset QR",
+  "name": "Asset QR Generator",
+  "short_name": "QR Generator",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#1e3a8a",
