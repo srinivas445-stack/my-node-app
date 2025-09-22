@@ -2,57 +2,43 @@ const express = require('express');
 const QRCode = require('qrcode');
 const bodyParser = require('body-parser');
 const path = require('path');
-const fs = require('fs').promises;
 const os = require('os');
 const bcrypt = require('bcrypt');
-const cors = require('cors'); // Added for mobile data access
+const cors = require('cors');
+const mongoose = require('mongoose');
 require('dotenv').config();
 
 const app = express();
-const port = process.env.PORT || 3000; // Render.com assigns PORT
-const dataFile = path.join(__dirname, 'assets.json');
+const port = process.env.PORT || 3000;
+
+const AssetSchema = new mongoose.Schema({
+  id: String,
+  name: { type: String, unique: true },
+  location: String,
+  department: String,
+  desktopSetupDate: String,
+  assetPassword: String,
+  scanHistory: [{ timestamp: String, device: String }],
+});
+const Asset = mongoose.model('Asset', AssetSchema);
+
+// Connect to MongoDB
+mongoose.connect(process.env.MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+  .then(() => console.log('Connected to MongoDB'))
+  .catch(err => console.error('MongoDB connection error:', err));
 
 // Admin credentials from environment variables
 const ADMIN_ID = process.env.ADMIN_ID || 'admin';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'password';
 
-// Load assets from file
-async function loadAssets() {
-  try {
-    const data = await fs.readFile(dataFile, 'utf8');
-    return new Map(JSON.parse(data));
-  } catch (error) {
-    console.log('No existing assets file found, starting fresh.');
-    return new Map();
-  }
-}
-
-// Save assets to file
-async function saveAssets(assets) {
-  try {
-    const data = JSON.stringify([...assets], null, 2);
-    await fs.writeFile(dataFile, data);
-    console.log('Assets saved to file.');
-  } catch (error) {
-    console.error('Error saving assets:', error);
-  }
-}
-
-// Load assets on startup
-let assets;
-loadAssets().then(loadedAssets => {
-  assets = loadedAssets;
-  console.log(`Loaded ${assets.size} assets from storage:`, [...assets.keys()]);
-});
+// Simple session management using memory (not persistent)
+const sessions = new Map();
 
 // Middleware
-app.use(cors()); // Enable CORS for mobile data access
+app.use(cors({ origin: true, credentials: true })); // Updated CORS
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, 'public')));
-
-// Simple session management using memory (not persistent)
-const sessions = new Map();
 
 // Middleware to check if user is authenticated
 function isAuthenticated(req) {
@@ -87,8 +73,36 @@ function getNetworkIP() {
   return `http://localhost:${port}`;
 }
 
+// Load assets from MongoDB
+async function loadAssets() {
+  const assets = await Asset.find();
+  const map = new Map();
+  assets.forEach(asset => map.set(asset.name, asset.toObject()));
+  return map;
+}
+
+// Save assets to MongoDB
+async function saveAssets(assets) {
+  try {
+    for (const [name, asset] of assets) {
+      await Asset.findOneAndUpdate({ name }, asset, { upsert: true });
+    }
+    console.log('Assets saved to MongoDB.');
+  } catch (error) {
+    console.error('Error saving assets:', error);
+  }
+}
+
+// Load assets on startup
+let assets = new Map();
+loadAssets().then(loadedAssets => {
+  assets = loadedAssets;
+  console.log(`Loaded ${assets.size} assets from MongoDB:`, [...assets.keys()]);
+});
+
 // Login page
-app.get('/', (req, res) => {
+app.get('/', async (req, res) => {
+  assets = await loadAssets(); // Refresh assets
   const baseUrl = getNetworkIP();
   if (isAuthenticated(req)) {
     res.send(`
@@ -235,7 +249,7 @@ app.post('/login', (req, res) => {
   if (id === ADMIN_ID && password === ADMIN_PASSWORD) {
     const sessionId = generateSessionId();
     sessions.set(sessionId, { authenticated: true });
-    res.setHeader('Set-Cookie', `sessionId=${sessionId}; HttpOnly; Path=/`);
+    res.setHeader('Set-Cookie', `sessionId=${sessionId}; HttpOnly; Path=/; SameSite=None; Secure`);
     res.redirect('/');
   } else {
     console.log(`Login failed for id=${id}`);
@@ -267,7 +281,7 @@ app.get('/logout', (req, res) => {
     console.log(`Logging out session: ${sessionId}`);
     sessions.delete(sessionId);
   }
-  res.setHeader('Set-Cookie', 'sessionId=; Max-Age=0; HttpOnly; Path=/');
+  res.setHeader('Set-Cookie', 'sessionId=; Max-Age=0; HttpOnly; Path=/; SameSite=None; Secure');
   res.redirect('/');
 });
 
@@ -279,6 +293,7 @@ app.get('/qr/all', async (req, res) => {
     return;
   }
 
+  assets = await loadAssets(); // Refresh assets
   const baseUrl = getNetworkIP();
   let qrCodesHtml = '';
 
@@ -372,12 +387,13 @@ app.get('/qr/all', async (req, res) => {
 });
 
 // List all assets (admin only)
-app.get('/list', (req, res) => {
+app.get('/list', async (req, res) => {
   if (!isAuthenticated(req)) {
     console.log('Access to /list denied: Not authenticated');
     res.redirect('/');
     return;
   }
+  assets = await loadAssets(); // Refresh assets
   const baseUrl = getNetworkIP();
   let assetList = '';
   for (const [id, asset] of assets) {
@@ -387,12 +403,12 @@ app.get('/list', (req, res) => {
         <td class="px-4 py-3">${asset.id}</td>
         <td class="px-4 py-3">${asset.name}</td>
         <td class="px-4 py-3">${asset.location}</td>
-        <td class="px-4 py-3">******** <a href="${baseUrl}/change-password/${id}" class="text-blue-600 hover:underline">(Change)</a></td>
+        <td class="px-4 py-3">******** <a href="${baseUrl}/change-password/${asset.name}" class="text-blue-600 hover:underline">(Change)</a></td>
         <td class="px-4 py-3">${scans}</td>
         <td class="px-4 py-3 space-x-2">
-          <a href="${baseUrl}/asset/${id}" class="text-blue-600 hover:underline">View</a>
-          <a href="${baseUrl}/qr/${id}" class="text-green-600 hover:underline">QR</a>
-          <a href="${baseUrl}/delete/${id}" onclick="return confirm('Are you sure you want to delete ${asset.name}?')" class="text-red-600 hover:underline">Delete</a>
+          <a href="${baseUrl}/asset/${asset.name}" class="text-blue-600 hover:underline">View</a>
+          <a href="${baseUrl}/qr/${asset.name}" class="text-green-600 hover:underline">QR</a>
+          <a href="${baseUrl}/delete/${asset.name}" onclick="return confirm('Are you sure you want to delete ${asset.name}?')" class="text-red-600 hover:underline">Delete</a>
         </td>
       </tr>
     `;
@@ -452,13 +468,13 @@ app.get('/list', (req, res) => {
 });
 
 // Change asset password (admin only)
-app.get('/change-password/:id', (req, res) => {
+app.get('/change-password/:id', async (req, res) => {
   if (!isAuthenticated(req)) {
     console.log('Access to /change-password/:id denied: Not authenticated');
     res.redirect('/');
     return;
   }
-  const asset = assets.get(req.params.id);
+  const asset = await Asset.findOne({ name: req.params.id });
   if (!asset) {
     console.log(`Change password failed: Asset ID ${req.params.id} not found`);
     res.status(404).send(`
@@ -524,7 +540,7 @@ app.post('/change-password/:id', async (req, res) => {
     res.redirect('/');
     return;
   }
-  const asset = assets.get(req.params.id);
+  const asset = await Asset.findOne({ name: req.params.id });
   if (!asset) {
     console.log(`Change password failed: Asset ID ${req.params.id} not found`);
     res.status(404).send(`
@@ -572,7 +588,8 @@ app.post('/change-password/:id', async (req, res) => {
 
   try {
     asset.assetPassword = await bcrypt.hash(newPassword, 10);
-    await saveAssets(assets);
+    await asset.save();
+    assets = await loadAssets(); // Refresh assets
     console.log(`Password updated for asset ID: ${req.params.id}`);
     res.send(`
       <!DOCTYPE html>
@@ -644,7 +661,8 @@ app.post('/generate', async (req, res) => {
     return;
   }
 
-  if (assets.has(name)) {
+  const existingAsset = await Asset.findOne({ name });
+  if (existingAsset) {
     const baseUrl = getNetworkIP();
     console.log(`Asset creation failed: Asset ID ${name} already exists`);
     res.send(`
@@ -670,17 +688,18 @@ app.post('/generate', async (req, res) => {
     return;
   }
 
-  const asset = {
+  const hashedPassword = await bcrypt.hash(assetPassword, 10);
+  const newAsset = new Asset({
     id,
     name,
     location,
     department: department || '',
     desktopSetupDate: desktopSetupDate || '',
-    assetPassword: await bcrypt.hash(assetPassword, 10),
+    assetPassword: hashedPassword,
     scanHistory: []
-  };
-  assets.set(name, asset);
-  await saveAssets(assets);
+  });
+  await newAsset.save();
+  assets = await loadAssets(); // Refresh assets
   console.log(`Asset created: ${name}, Current assets:`, [...assets.keys()]);
 
   const baseUrl = getNetworkIP();
@@ -763,7 +782,7 @@ app.post('/generate', async (req, res) => {
 
 // Generate QR for existing asset
 app.get('/qr/:id', async (req, res) => {
-  const asset = assets.get(req.params.id);
+  const asset = await Asset.findOne({ name: req.params.id });
   if (!asset) {
     console.log(`QR generation failed: Asset ID ${req.params.id} not found`);
     res.status(404).send(`
@@ -854,7 +873,7 @@ app.get('/qr/:id', async (req, res) => {
 
 // Download QR code as PNG
 app.get('/qr/:id/download', async (req, res) => {
-  const asset = assets.get(req.params.id);
+  const asset = await Asset.findOne({ name: req.params.id });
   if (!asset) {
     console.log(`QR download failed: Asset ID ${req.params.id} not found`);
     res.status(404).send(`
@@ -882,9 +901,15 @@ app.get('/qr/:id/download', async (req, res) => {
   const url = `${baseUrl}/asset/${asset.name}?scan=true`;
   try {
     console.log(`Downloading QR for asset: ${asset.name}, URL: ${url}`);
-    const qrBuffer = await QRCode.toBuffer(url, { width: 300, margin: 2 });
+    const qrBuffer = await QRCode.toBuffer(url, { 
+      width: 300, 
+      margin: 2,
+      color: { dark: '#000000', light: '#FFFFFF' },
+      errorCorrectionLevel: 'H'
+    });
     res.setHeader('Content-Disposition', `attachment; filename=qr-${asset.name}.png`);
-    res.type('image/png').send(qrBuffer);
+    res.setHeader('Content-Type', 'image/png');
+    res.send(qrBuffer);
   } catch (err) {
     console.error(`QR download error for asset ID ${req.params.id}:`, err);
     res.status(500).send('Error generating QR code');
@@ -899,9 +924,9 @@ app.get('/delete/:id', async (req, res) => {
     res.redirect('/');
     return;
   }
-  const asset = assets.get(req.params.id);
+  const asset = await Asset.findOne({ name: req.params.id });
   if (!asset) {
-    console.log(`Delete failed: Asset ID ${req.params.id} not found. Available assets:`, [...assets.keys()]);
+    console.log(`Delete failed: Asset ID ${req.params.id} not found.`);
     res.status(404).send(`
       <!DOCTYPE html>
       <html lang="en">
@@ -915,7 +940,6 @@ app.get('/delete/:id', async (req, res) => {
         <div class="text-center bg-white p-8 rounded-2xl shadow-lg">
           <h2 class="text-2xl font-bold text-red-600 mb-4">Asset not found</h2>
           <p class="text-gray-600 mb-4">The asset ID "${req.params.id}" does not exist.</p>
-          <p class="text-gray-500 text-sm mb-4">Available asset IDs: ${[...assets.keys()].join(', ') || 'None'}</p>
           <a href="/list" class="text-blue-600 hover:underline">Back to Asset List</a>
         </div>
       </body>
@@ -925,9 +949,9 @@ app.get('/delete/:id', async (req, res) => {
   }
 
   try {
-    assets.delete(req.params.id);
-    await saveAssets(assets);
-    console.log(`Successfully deleted asset ID: ${req.params.id}, Remaining assets:`, [...assets.keys()]);
+    await Asset.deleteOne({ name: req.params.id });
+    assets = await loadAssets(); // Refresh assets
+    console.log(`Successfully deleted asset ID: ${req.params.id}`);
     res.redirect('/list');
   } catch (error) {
     console.error(`Delete error for asset ID ${req.params.id}:`, error);
@@ -970,7 +994,7 @@ app.get('/scan', (req, res) => {
       <link rel="apple-touch-icon" href="/icon-192.png">
       <script>
         if ('serviceWorker' in navigator) {
-          navigator.serviceWorker.register('/sw.js');
+          navigator.serviceWorker.register('/sw.js').catch(err => console.error('Service Worker registration failed:', err));
         }
       </script>
     </head>
@@ -987,19 +1011,24 @@ app.get('/scan', (req, res) => {
           const ctx = canvas.getContext('2d');
           const output = document.getElementById('output');
 
-          navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
-            .then(stream => {
+          async function startCamera() {
+            try {
+              const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
               video.srcObject = stream;
-              video.play();
+              await video.play();
               scan();
-            })
-            .catch(err => {
-              output.textContent = 'Camera access denied. Please allow camera permissions.';
+            } catch (err) {
+              output.textContent = 'Camera access denied. Please allow camera permissions or use a device with a camera.';
               output.classList.add('text-red-600');
               console.error('Camera access error:', err);
-            });
+            }
+          }
 
           function scan() {
+            if (!video.videoWidth || !video.videoHeight) {
+              requestAnimationFrame(scan);
+              return;
+            }
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
             ctx.drawImage(video, 0, 0);
@@ -1020,6 +1049,8 @@ app.get('/scan', (req, res) => {
               requestAnimationFrame(scan);
             }
           }
+
+          startCamera();
         </script>
       </div>
     </body>
@@ -1030,7 +1061,7 @@ app.get('/scan', (req, res) => {
 // Handle asset password verification
 app.post('/asset/verify/:id', async (req, res) => {
   const { password } = req.body;
-  const asset = assets.get(req.params.id);
+  const asset = await Asset.findOne({ name: req.params.id });
   if (!asset) {
     console.log(`Asset verification failed: Asset ID ${req.params.id} not found`);
     res.status(404).send(`
@@ -1058,7 +1089,7 @@ app.post('/asset/verify/:id', async (req, res) => {
     console.log(`Asset ${req.params.id} verified successfully`);
     const sessionId = generateSessionId();
     sessions.set(sessionId, { assetId: req.params.id, verified: true });
-    res.setHeader('Set-Cookie', `assetSessionId=${sessionId}; HttpOnly; Path=/asset/${req.params.id}`);
+    res.setHeader('Set-Cookie', `assetSessionId=${sessionId}; HttpOnly; Path=/asset/${req.params.id}; SameSite=None; Secure`);
     res.redirect(`/asset/${req.params.id}?scan=true`);
   } else {
     console.log(`Asset verification failed for ${req.params.id}: Incorrect password`);
@@ -1090,9 +1121,9 @@ app.post('/asset/verify/:id', async (req, res) => {
 // Display asset details (mobile-friendly)
 app.get('/asset/:id', async (req, res) => {
   console.log(`Accessing asset with ID: ${req.params.id}, Query: ${JSON.stringify(req.query)}, Cookies: ${req.headers.cookie}`);
-  const asset = assets.get(req.params.id);
+  const asset = await Asset.findOne({ name: req.params.id });
   if (!asset) {
-    console.log(`Asset not found for ID: ${req.params.id}. Available assets:`, [...assets.keys()]);
+    console.log(`Asset not found for ID: ${req.params.id}.`);
     res.status(404).send(`
       <!DOCTYPE html>
       <html lang="en">
@@ -1106,7 +1137,6 @@ app.get('/asset/:id', async (req, res) => {
         <div class="text-center bg-white p-8 rounded-2xl shadow-lg">
           <h2 class="text-2xl font-bold text-red-600 mb-4">Asset Not Found</h2>
           <p class="text-gray-600 mb-4">The asset ID "${req.params.id}" does not exist.</p>
-          <p class="text-gray-500 text-sm mb-4">Available asset IDs: ${[...assets.keys()].join(', ') || 'None'}</p>
           <a href="/" class="text-blue-600 hover:underline">← Back to Home</a>
         </div>
       </body>
@@ -1147,11 +1177,11 @@ app.get('/asset/:id', async (req, res) => {
   }
 
   if (req.query.scan === 'true') {
-    if (!asset.scanHistory) asset.scanHistory = [];
     const now = new Date().toISOString();
     const userAgent = req.headers['user-agent'] || 'Unknown Device';
     asset.scanHistory.push({ timestamp: now, device: userAgent });
-    await saveAssets(assets);
+    await asset.save();
+    assets = await loadAssets(); // Refresh assets
     console.log(`Recorded scan for asset ${req.params.id}: ${now}, Device: ${userAgent}`);
   }
 
@@ -1270,8 +1300,8 @@ app.get('/asset/:id', async (req, res) => {
 });
 
 // API endpoint for JSON data
-app.get('/api/asset/:id', (req, res) => {
-  const asset = assets.get(req.params.id);
+app.get('/api/asset/:id', async (req, res) => {
+  const asset = await Asset.findOne({ name: req.params.id });
   if (!asset) {
     console.log(`API request failed: Asset ID ${req.params.id} not found`);
     res.status(404).json({ error: 'Asset not found', id: req.params.id });
@@ -1286,7 +1316,6 @@ const server = app.listen(port, '0.0.0.0', () => {
   console.log(`Server running at: ${baseUrl}`);
   console.log(`Install as PWA: Open in Chrome, click "Add to Home Screen" (mobile) or "+" in address bar (desktop)`);
   console.log(`For Render.com deployment: Ensure BASE_URL is set to https://your-app.onrender.com in environment variables`);
-  console.log(`Assets stored in: ${dataFile} (Note: Render.com free tier has ephemeral storage)`);
   console.log(`Admin Login: ID=${ADMIN_ID}, Password=Set in .env`);
 });
 
