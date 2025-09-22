@@ -1,8 +1,6 @@
 const express = require('express');
 const QRCode = require('qrcode');
 const bodyParser = require('body-parser');
-const path = require('path');
-const os = require('os');
 const bcrypt = require('bcrypt');
 const cors = require('cors');
 const mongoose = require('mongoose');
@@ -11,6 +9,7 @@ require('dotenv').config();
 const app = express();
 const port = process.env.PORT || 3000;
 
+// MongoDB Schema
 const AssetSchema = new mongoose.Schema({
   id: String,
   name: { type: String, unique: true },
@@ -31,54 +30,46 @@ mongoose.connect(process.env.MONGO_URI, { useNewUrlParser: true, useUnifiedTopol
 const ADMIN_ID = process.env.ADMIN_ID || 'admin';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'password';
 
-// Simple session management using memory (not persistent)
+// Session management
 const sessions = new Map();
 
 // Middleware
-app.use(cors({ origin: true, credentials: true })); // Updated CORS
+app.use(cors({ origin: true, credentials: true }));
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static('public'));
 
-// Middleware to check if user is authenticated
+// Authentication middleware
 function isAuthenticated(req) {
   const sessionId = req.headers.cookie ? req.headers.cookie.split('sessionId=')[1]?.split(';')[0] : null;
   console.log(`Checking authentication: sessionId=${sessionId}, exists=${sessions.has(sessionId)}`);
   return sessionId && sessions.has(sessionId);
 }
 
-// Helper function to generate session ID
+// Generate session ID
 function generateSessionId() {
   return Math.random().toString(36).substring(2) + Date.now().toString(36);
 }
 
-// Get base URL for QR codes (Render.com or local)
-function getNetworkIP() {
-  if (process.env.BASE_URL) {
-    console.log(`Using BASE_URL from .env: ${process.env.BASE_URL}`);
-    return process.env.BASE_URL;
-  }
-  // Fallback for local development
-  const interfaces = os.networkInterfaces();
-  for (const name of Object.keys(interfaces)) {
-    for (const iface of interfaces[name]) {
-      if (iface.family === 'IPv4' && !iface.internal) {
-        const url = `http://${iface.address}:${port}`;
-        console.log(`Detected local IP: ${url}`);
-        return url;
-      }
-    }
-  }
-  console.log(`Falling back to localhost: http://localhost:${port}`);
-  return `http://localhost:${port}`;
+// Get base URL
+function getBaseUrl() {
+  const baseUrl = process.env.BASE_URL || `http://localhost:${port}`;
+  console.log(`Using base URL: ${baseUrl}`);
+  return baseUrl;
 }
 
 // Load assets from MongoDB
 async function loadAssets() {
-  const assets = await Asset.find();
-  const map = new Map();
-  assets.forEach(asset => map.set(asset.name, asset.toObject()));
-  return map;
+  try {
+    const assets = await Asset.find();
+    const map = new Map();
+    assets.forEach(asset => map.set(asset.name, asset.toObject()));
+    console.log(`Loaded ${assets.length} assets from MongoDB`);
+    return map;
+  } catch (error) {
+    console.error('Error loading assets:', error);
+    return new Map();
+  }
 }
 
 // Save assets to MongoDB
@@ -87,23 +78,22 @@ async function saveAssets(assets) {
     for (const [name, asset] of assets) {
       await Asset.findOneAndUpdate({ name }, asset, { upsert: true });
     }
-    console.log('Assets saved to MongoDB.');
+    console.log('Assets saved to MongoDB');
   } catch (error) {
     console.error('Error saving assets:', error);
   }
 }
 
-// Load assets on startup
+// Initialize assets
 let assets = new Map();
 loadAssets().then(loadedAssets => {
   assets = loadedAssets;
-  console.log(`Loaded ${assets.size} assets from MongoDB:`, [...assets.keys()]);
 });
 
 // Login page
 app.get('/', async (req, res) => {
-  assets = await loadAssets(); // Refresh assets
-  const baseUrl = getNetworkIP();
+  assets = await loadAssets();
+  const baseUrl = getBaseUrl();
   if (isAuthenticated(req)) {
     res.send(`
       <!DOCTYPE html>
@@ -141,24 +131,18 @@ app.get('/', async (req, res) => {
       <body class="gradient-bg min-h-screen flex items-center justify-center py-12">
         <div class="container mx-auto max-w-2xl bg-white p-10 rounded-2xl shadow-2xl">
           <h1 class="text-3xl font-bold text-gray-900 mb-8">Asset QR Code Generator</h1>
-          
           <div class="bg-white border border-gray-200 p-6 rounded-lg mb-6 shadow-sm">
             <h3 class="text-lg font-semibold text-gray-800 mb-3">Network Access</h3>
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <p class="text-sm text-gray-600"><strong>Desktop:</strong> <span class="font-mono bg-gray-100 p-1 rounded">${baseUrl}</span></p>
-            </div>
+            <p class="text-sm text-gray-600"><strong>Desktop:</strong> <span class="font-mono bg-gray-100 p-1 rounded">${baseUrl}</span></p>
             <p class="text-xs text-gray-500 mt-3">Install as an app for easier access!</p>
           </div>
-
           <div class="bg-blue-50 p-4 rounded-lg mb-6">
             <h4 class="text-md font-semibold text-blue-800 mb-2">Install as App</h4>
             <p class="text-sm text-gray-600">On mobile, tap your browser's menu and select "Add to Home Screen". On desktop, click the "+" in the address bar.</p>
           </div>
-          
           <div class="text-center text-gray-600 mb-6 bg-gray-50 py-3 rounded-lg">
             <p>Total Assets Stored: <span class="font-semibold text-blue-600">${assets.size}</span></p>
           </div>
-          
           <form action="/generate" method="POST" class="space-y-6">
             <h3 class="text-xl font-semibold text-gray-800">Create New Asset</h3>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -189,7 +173,6 @@ app.get('/', async (req, res) => {
             </div>
             <button type="submit" class="w-full py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-semibold shadow-md">Generate QR Code</button>
           </form>
-          
           <div class="mt-6 flex justify-center space-x-6 text-sm">
             <a href="/list" class="text-blue-600 hover:underline font-medium">View All Assets</a>
             <a href="/qr/all" class="text-purple-600 hover:underline font-medium">View All QR Codes</a>
@@ -250,7 +233,7 @@ app.post('/login', (req, res) => {
     const sessionId = generateSessionId();
     sessions.set(sessionId, { authenticated: true });
     res.setHeader('Set-Cookie', `sessionId=${sessionId}; HttpOnly; Path=/; SameSite=None; Secure`);
-    res.redirect('/');
+    res.redirect(getBaseUrl());
   } else {
     console.log(`Login failed for id=${id}`);
     res.status(401).send(`
@@ -266,7 +249,7 @@ app.post('/login', (req, res) => {
         <div class="container mx-auto max-w-md bg-white p-8 rounded-2xl shadow-lg">
           <h1 class="text-3xl font-bold text-red-600 text-center mb-6">Login Failed</h1>
           <p class="text-gray-600 text-center mb-4">Invalid ID or password.</p>
-          <a href="/" class="text-blue-600 hover:underline text-center">Try Again</a>
+          <a href="${getBaseUrl()}" class="text-blue-600 hover:underline text-center block">Try Again</a>
         </div>
       </body>
       </html>
@@ -282,27 +265,25 @@ app.get('/logout', (req, res) => {
     sessions.delete(sessionId);
   }
   res.setHeader('Set-Cookie', 'sessionId=; Max-Age=0; HttpOnly; Path=/; SameSite=None; Secure');
-  res.redirect('/');
+  res.redirect(getBaseUrl());
 });
 
 // Generate QR codes for all assets
 app.get('/qr/all', async (req, res) => {
   if (!isAuthenticated(req)) {
     console.log('Access to /qr/all denied: Not authenticated');
-    res.redirect('/');
+    res.redirect(getBaseUrl());
     return;
   }
-
-  assets = await loadAssets(); // Refresh assets
-  const baseUrl = getNetworkIP();
+  assets = await loadAssets();
+  const baseUrl = getBaseUrl();
   let qrCodesHtml = '';
-
   if (assets.size === 0) {
     qrCodesHtml = `
       <div class="text-center bg-white p-8 rounded-lg shadow">
         <h2 class="text-2xl font-bold text-gray-600 mb-4">No Assets Found</h2>
         <p class="text-gray-500 mb-4">Create some assets to generate QR codes.</p>
-        <a href="/" class="text-blue-600 hover:underline">Back to Home</a>
+        <a href="${baseUrl}" class="text-blue-600 hover:underline">Back to Home</a>
       </div>
     `;
   } else {
@@ -341,7 +322,6 @@ app.get('/qr/all', async (req, res) => {
       }
     }
   }
-
   res.send(`
     <!DOCTYPE html>
     <html lang="en">
@@ -370,11 +350,11 @@ app.get('/qr/all', async (req, res) => {
       <div class="container mx-auto max-w-5xl p-6">
         <h1 class="text-3xl font-bold text-white mb-8 text-center">All Asset QR Codes (${assets.size})</h1>
         <div class="flex justify-between mb-6">
-          <a href="/" class="text-white hover:underline">← Back to Generator</a>
+          <a href="${baseUrl}" class="text-white hover:underline">← Back to Generator</a>
           <div class="space-x-4">
-            <a href="/list" class="text-white hover:underline">View All Assets</a>
-            <a href="/scan" class="text-white hover:underline">Scan QR Code</a>
-            <a href="/logout" class="text-red-300 hover:underline">Logout</a>
+            <a href="${baseUrl}/list" class="text-white hover:underline">View All Assets</a>
+            <a href="${baseUrl}/scan" class="text-white hover:underline">Scan QR Code</a>
+            <a href="${baseUrl}/logout" class="text-red-300 hover:underline">Logout</a>
           </div>
         </div>
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -386,15 +366,15 @@ app.get('/qr/all', async (req, res) => {
   `);
 });
 
-// List all assets (admin only)
+// List all assets
 app.get('/list', async (req, res) => {
   if (!isAuthenticated(req)) {
     console.log('Access to /list denied: Not authenticated');
-    res.redirect('/');
+    res.redirect(getBaseUrl());
     return;
   }
-  assets = await loadAssets(); // Refresh assets
-  const baseUrl = getNetworkIP();
+  assets = await loadAssets();
+  const baseUrl = getBaseUrl();
   let assetList = '';
   for (const [id, asset] of assets) {
     const scans = asset.scanHistory ? asset.scanHistory.length : 0;
@@ -413,7 +393,6 @@ app.get('/list', async (req, res) => {
       </tr>
     `;
   }
-
   res.send(`
     <!DOCTYPE html>
     <html lang="en">
@@ -437,11 +416,11 @@ app.get('/list', async (req, res) => {
       <div class="container mx-auto max-w-5xl p-6">
         <h1 class="text-3xl font-bold text-gray-800 mb-6">All Assets (${assets.size})</h1>
         <div class="flex justify-between mb-4">
-          <a href="/" class="text-blue-600 hover:underline">← Back to Generator</a>
+          <a href="${baseUrl}" class="text-blue-600 hover:underline">← Back to Generator</a>
           <div class="space-x-4">
             <a href="${baseUrl}/qr/all" class="text-purple-600 hover:underline">View All QR Codes</a>
             <a href="${baseUrl}/scan" class="text-green-600 hover:underline">Scan QR Code</a>
-            <a href="/logout" class="text-red-600 hover:underline">Logout</a>
+            <a href="${baseUrl}/logout" class="text-red-600 hover:underline">Logout</a>
           </div>
         </div>
         <div class="overflow-x-auto">
@@ -467,11 +446,11 @@ app.get('/list', async (req, res) => {
   `);
 });
 
-// Change asset password (admin only)
+// Change asset password
 app.get('/change-password/:id', async (req, res) => {
   if (!isAuthenticated(req)) {
     console.log('Access to /change-password/:id denied: Not authenticated');
-    res.redirect('/');
+    res.redirect(getBaseUrl());
     return;
   }
   const asset = await Asset.findOne({ name: req.params.id });
@@ -489,14 +468,13 @@ app.get('/change-password/:id', async (req, res) => {
       <body class="bg-gray-100 min-h-screen flex items-center justify-center">
         <div class="text-center bg-white p-8 rounded-2xl shadow-lg">
           <h2 class="text-2xl font-bold text-red-600 mb-4">Asset not found</h2>
-          <a href="/list" class="text-blue-600 hover:underline">Back to Asset List</a>
+          <a href="${getBaseUrl()}/list" class="text-blue-600 hover:underline">Back to Asset List</a>
         </div>
       </body>
       </html>
     `);
     return;
   }
-
   res.send(`
     <!DOCTYPE html>
     <html lang="en">
@@ -526,18 +504,18 @@ app.get('/change-password/:id', async (req, res) => {
           </div>
           <button type="submit" class="w-full py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">Update Password</button>
         </form>
-        <a href="/list" class="block mt-4 text-blue-600 hover:underline text-center">Back to Asset List</a>
+        <a href="${getBaseUrl()}/list" class="block mt-4 text-blue-600 hover:underline text-center">Back to Asset List</a>
       </div>
     </body>
     </html>
   `);
 });
 
-// Handle password change (admin only)
+// Handle password change
 app.post('/change-password/:id', async (req, res) => {
   if (!isAuthenticated(req)) {
     console.log('Change password POST denied: Not authenticated');
-    res.redirect('/');
+    res.redirect(getBaseUrl());
     return;
   }
   const asset = await Asset.findOne({ name: req.params.id });
@@ -555,14 +533,13 @@ app.post('/change-password/:id', async (req, res) => {
       <body class="bg-gray-100 min-h-screen flex items-center justify-center">
         <div class="text-center bg-white p-8 rounded-2xl shadow-lg">
           <h2 class="text-2xl font-bold text-red-600 mb-4">Asset not found</h2>
-          <a href="/list" class="text-blue-600 hover:underline">Back to Asset List</a>
+          <a href="${getBaseUrl()}/list" class="text-blue-600 hover:underline">Back to Asset List</a>
         </div>
       </body>
       </html>
     `);
     return;
   }
-
   const { newPassword } = req.body;
   if (!newPassword) {
     console.log(`Change password failed for ${req.params.id}: No new password provided`);
@@ -578,18 +555,17 @@ app.post('/change-password/:id', async (req, res) => {
       <body class="bg-gray-100 min-h-screen flex items-center justify-center">
         <div class="text-center bg-white p-8 rounded-2xl shadow-lg">
           <h2 class="text-2xl font-bold text-red-600 mb-4">Error: New password is required</h2>
-          <a href="/change-password/${req.params.id}" class="text-blue-600 hover:underline">Try Again</a>
+          <a href="${getBaseUrl()}/change-password/${req.params.id}" class="text-blue-600 hover:underline">Try Again</a>
         </div>
       </body>
       </html>
     `);
     return;
   }
-
   try {
     asset.assetPassword = await bcrypt.hash(newPassword, 10);
     await asset.save();
-    assets = await loadAssets(); // Refresh assets
+    assets = await loadAssets();
     console.log(`Password updated for asset ID: ${req.params.id}`);
     res.send(`
       <!DOCTYPE html>
@@ -603,7 +579,7 @@ app.post('/change-password/:id', async (req, res) => {
       <body class="bg-gray-100 min-h-screen flex items-center justify-center">
         <div class="text-center bg-white p-8 rounded-2xl shadow-lg">
           <h2 class="text-2xl font-bold text-green-600 mb-4">Password for ${asset.name} updated successfully</h2>
-          <a href="/list" class="text-blue-600 hover:underline">Back to Asset List</a>
+          <a href="${getBaseUrl()}/list" class="text-blue-600 hover:underline">Back to Asset List</a>
         </div>
       </body>
       </html>
@@ -622,7 +598,7 @@ app.post('/change-password/:id', async (req, res) => {
       <body class="bg-gray-100 min-h-screen flex items-center justify-center">
         <div class="text-center bg-white p-8 rounded-2xl shadow-lg">
           <h2 class="text-2xl font-bold text-red-600 mb-4">Error updating password</h2>
-          <a href="/list" class="text-blue-600 hover:underline">Back to Asset List</a>
+          <a href="${getBaseUrl()}/list" class="text-blue-600 hover:underline">Back to Asset List</a>
         </div>
       </body>
       </html>
@@ -634,7 +610,7 @@ app.post('/change-password/:id', async (req, res) => {
 app.post('/generate', async (req, res) => {
   if (!isAuthenticated(req)) {
     console.log('Access to /generate denied: Not authenticated');
-    res.redirect('/');
+    res.redirect(getBaseUrl());
     return;
   }
   const { id, name, location, department, desktopSetupDate, assetPassword } = req.body;
@@ -653,17 +629,16 @@ app.post('/generate', async (req, res) => {
       <body class="bg-gray-100 min-h-screen flex items-center justify-center">
         <div class="text-center bg-white p-8 rounded-2xl shadow-lg">
           <h2 class="text-2xl font-bold text-red-600 mb-4">Error: Name, Asset ID, Location, and Asset Password are required</h2>
-          <a href="/" class="text-blue-600 hover:underline">Try Again</a>
+          <a href="${getBaseUrl()}" class="text-blue-600 hover:underline">Try Again</a>
         </div>
       </body>
       </html>
     `);
     return;
   }
-
   const existingAsset = await Asset.findOne({ name });
   if (existingAsset) {
-    const baseUrl = getNetworkIP();
+    const baseUrl = getBaseUrl();
     console.log(`Asset creation failed: Asset ID ${name} already exists`);
     res.send(`
       <!DOCTYPE html>
@@ -679,7 +654,7 @@ app.post('/generate', async (req, res) => {
           <h2 class="text-2xl font-bold text-red-600 mb-4">Asset ID already exists!</h2>
           <div class="space-x-4">
             <a href="${baseUrl}/asset/${name}" class="text-blue-600 hover:underline">View existing asset</a>
-            <a href="/" class="text-blue-600 hover:underline">Try different ID</a>
+            <a href="${baseUrl}" class="text-blue-600 hover:underline">Try different ID</a>
           </div>
         </div>
       </body>
@@ -687,7 +662,6 @@ app.post('/generate', async (req, res) => {
     `);
     return;
   }
-
   const hashedPassword = await bcrypt.hash(assetPassword, 10);
   const newAsset = new Asset({
     id,
@@ -699,40 +673,17 @@ app.post('/generate', async (req, res) => {
     scanHistory: []
   });
   await newAsset.save();
-  assets = await loadAssets(); // Refresh assets
-  console.log(`Asset created: ${name}, Current assets:`, [...assets.keys()]);
-
-  const baseUrl = getNetworkIP();
+  assets = await loadAssets();
+  console.log(`Asset created: ${name}`);
+  const baseUrl = getBaseUrl();
   const url = `${baseUrl}/asset/${name}?scan=true`;
-
-  QRCode.toDataURL(url, { 
-    width: 300,
-    margin: 2,
-    color: { dark: '#000000', light: '#FFFFFF' },
-    errorCorrectionLevel: 'H'
-  }, (err, qrDataUrl) => {
-    if (err) {
-      console.error(`QR code generation failed for asset ${name}:`, err);
-      res.status(500).send(`
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>Error</title>
-          <script src="https://cdn.tailwindcss.com"></script>
-        </head>
-        <body class="bg-gray-100 min-h-screen flex items-center justify-center">
-          <div class="text-center bg-white p-8 rounded-2xl shadow-lg">
-            <h2 class="text-2xl font-bold text-red-600 mb-4">Error generating QR code</h2>
-            <a href="/" class="text-blue-600 hover:underline">Try Again</a>
-          </div>
-        </body>
-        </html>
-      `);
-      return;
-    }
-
+  try {
+    const qrDataUrl = await QRCode.toDataURL(url, { 
+      width: 300,
+      margin: 2,
+      color: { dark: '#000000', light: '#FFFFFF' },
+      errorCorrectionLevel: 'H'
+    });
     res.send(`
       <!DOCTYPE html>
       <html lang="en">
@@ -757,27 +708,42 @@ app.post('/generate', async (req, res) => {
           <h1 class="text-2xl font-bold text-gray-800 text-center mb-4">Asset QR Code Ready!</h1>
           <h3 class="text-lg font-semibold text-gray-700 text-center mb-4">${name}</h3>
           <p class="text-gray-600 text-center mb-4">Scan this QR code to view details.</p>
-          
           <div class="bg-blue-50 p-3 rounded-lg mb-4">
             <p class="font-mono text-sm text-gray-600">QR URL: ${url}</p>
           </div>
-          
           <img src="${qrDataUrl}" alt="Asset QR Code" class="mx-auto mb-4 border-2 border-gray-200 rounded-lg">
-          
           <div class="flex flex-col space-y-2">
             <a href="${baseUrl}/qr/${name}/download" class="py-2 px-4 bg-green-600 text-white rounded-lg hover:bg-green-700 text-center">Download QR Code</a>
             <a href="${baseUrl}/asset/${name}" class="py-2 px-4 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-center">🔗 Open in Browser</a>
-            <a href="/" class="py-2 px-4 bg-gray-600 text-white rounded-lg hover:bg-gray-700 text-center">➕ Add Another Asset</a>
-            <a href="/list" class="py-2 px-4 bg-gray-600 text-white rounded-lg hover:bg-gray-700 text-center">📋 View All Assets</a>
-            <a href="/qr/all" class="py-2 px-4 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-center">🖼 View All QR Codes</a>
+            <a href="${baseUrl}" class="py-2 px-4 bg-gray-600 text-white rounded-lg hover:bg-gray-700 text-center">➕ Add Another Asset</a>
+            <a href="${baseUrl}/list" class="py-2 px-4 bg-gray-600 text-white rounded-lg hover:bg-gray-700 text-center">📋 View All Assets</a>
+            <a href="${baseUrl}/qr/all" class="py-2 px-4 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-center">🖼 View All QR Codes</a>
           </div>
-          
           <p class="text-sm text-gray-500 mt-4 text-center">💡 Right-click or long-press the QR code to save/print</p>
         </div>
       </body>
       </html>
     `);
-  });
+  } catch (err) {
+    console.error(`QR code generation failed for asset ${name}:`, err);
+    res.status(500).send(`
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Error</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+      </head>
+      <body class="bg-gray-100 min-h-screen flex items-center justify-center">
+        <div class="text-center bg-white p-8 rounded-2xl shadow-lg">
+          <h2 class="text-2xl font-bold text-red-600 mb-4">Error generating QR code</h2>
+          <a href="${getBaseUrl()}" class="text-blue-600 hover:underline">Try Again</a>
+        </div>
+      </body>
+      </html>
+    `);
+  }
 });
 
 // Generate QR for existing asset
@@ -798,17 +764,15 @@ app.get('/qr/:id', async (req, res) => {
         <div class="text-center bg-white p-8 rounded-2xl shadow-lg">
           <h2 class="text-2xl font-bold text-red-600 mb-4">Asset not found</h2>
           <p class="text-gray-600 mb-4">The asset ID "${req.params.id}" does not exist.</p>
-          <a href="/" class="text-blue-600 hover:underline">Back to Home</a>
+          <a href="${getBaseUrl()}" class="text-blue-600 hover:underline">Back to Home</a>
         </div>
       </body>
       </html>
     `);
     return;
   }
-
-  const baseUrl = getNetworkIP();
+  const baseUrl = getBaseUrl();
   const url = `${baseUrl}/asset/${asset.name}?scan=true`;
-  
   try {
     console.log(`Generating QR for asset: ${asset.name}, URL: ${url}`);
     const qrDataUrl = await QRCode.toDataURL(url, { 
@@ -843,7 +807,7 @@ app.get('/qr/:id', async (req, res) => {
           <div class="flex flex-col space-y-2">
             <a href="${baseUrl}/qr/${asset.name}/download" class="py-2 px-4 bg-green-600 text-white rounded-lg hover:bg-green-700 text-center">Download QR Code</a>
             <a href="${baseUrl}/qr/all" class="py-2 px-4 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-center">View All QR Codes</a>
-            <a href="/" class="py-2 px-4 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-center">← Back to Home</a>
+            <a href="${baseUrl}" class="py-2 px-4 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-center">← Back to Home</a>
           </div>
         </div>
       </body>
@@ -863,7 +827,7 @@ app.get('/qr/:id', async (req, res) => {
       <body class="bg-gray-100 min-h-screen flex items-center justify-center">
         <div class="text-center bg-white p-8 rounded-2xl shadow-lg">
           <h2 class="text-2xl font-bold text-red-600 mb-4">Error generating QR code</h2>
-          <a href="/" class="text-blue-600 hover:underline">Back to Home</a>
+          <a href="${getBaseUrl()}" class="text-blue-600 hover:underline">Back to Home</a>
         </div>
       </body>
       </html>
@@ -889,15 +853,14 @@ app.get('/qr/:id/download', async (req, res) => {
         <div class="text-center bg-white p-8 rounded-2xl shadow-lg">
           <h2 class="text-2xl font-bold text-red-600 mb-4">Asset not found</h2>
           <p class="text-gray-600 mb-4">The asset ID "${req.params.id}" does not exist.</p>
-          <a href="/" class="text-blue-600 hover:underline">Back to Home</a>
+          <a href="${getBaseUrl()}" class="text-blue-600 hover:underline">Back to Home</a>
         </div>
       </body>
       </html>
     `);
     return;
   }
-
-  const baseUrl = getNetworkIP();
+  const baseUrl = getBaseUrl();
   const url = `${baseUrl}/asset/${asset.name}?scan=true`;
   try {
     console.log(`Downloading QR for asset: ${asset.name}, URL: ${url}`);
@@ -912,21 +875,37 @@ app.get('/qr/:id/download', async (req, res) => {
     res.send(qrBuffer);
   } catch (err) {
     console.error(`QR download error for asset ID ${req.params.id}:`, err);
-    res.status(500).send('Error generating QR code');
+    res.status(500).send(`
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Error</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+      </head>
+      <body class="bg-gray-100 min-h-screen flex items-center justify-center">
+        <div class="text-center bg-white p-8 rounded-2xl shadow-lg">
+          <h2 class="text-2xl font-bold text-red-600 mb-4">Error generating QR code</h2>
+          <a href="${getBaseUrl()}" class="text-blue-600 hover:underline">Back to Home</a>
+        </div>
+      </body>
+      </html>
+    `);
   }
 });
 
-// Delete asset (admin only)
+// Delete asset
 app.get('/delete/:id', async (req, res) => {
-  console.log(`Delete request received for asset ID: ${req.params.id}, Cookies: ${req.headers.cookie}`);
+  console.log(`Delete request for asset ID: ${req.params.id}, Cookies: ${req.headers.cookie}`);
   if (!isAuthenticated(req)) {
     console.log('Delete failed: Not authenticated');
-    res.redirect('/');
+    res.redirect(getBaseUrl());
     return;
   }
   const asset = await Asset.findOne({ name: req.params.id });
   if (!asset) {
-    console.log(`Delete failed: Asset ID ${req.params.id} not found.`);
+    console.log(`Delete failed: Asset ID ${req.params.id} not found`);
     res.status(404).send(`
       <!DOCTYPE html>
       <html lang="en">
@@ -940,19 +919,18 @@ app.get('/delete/:id', async (req, res) => {
         <div class="text-center bg-white p-8 rounded-2xl shadow-lg">
           <h2 class="text-2xl font-bold text-red-600 mb-4">Asset not found</h2>
           <p class="text-gray-600 mb-4">The asset ID "${req.params.id}" does not exist.</p>
-          <a href="/list" class="text-blue-600 hover:underline">Back to Asset List</a>
+          <a href="${getBaseUrl()}/list" class="text-blue-600 hover:underline">Back to Asset List</a>
         </div>
       </body>
       </html>
     `);
     return;
   }
-
   try {
     await Asset.deleteOne({ name: req.params.id });
-    assets = await loadAssets(); // Refresh assets
+    assets = await loadAssets();
     console.log(`Successfully deleted asset ID: ${req.params.id}`);
-    res.redirect('/list');
+    res.redirect(`${getBaseUrl()}/list`);
   } catch (error) {
     console.error(`Delete error for asset ID ${req.params.id}:`, error);
     res.status(500).send(`
@@ -968,7 +946,7 @@ app.get('/delete/:id', async (req, res) => {
         <div class="text-center bg-white p-8 rounded-2xl shadow-lg">
           <h2 class="text-2xl font-bold text-red-600 mb-4">Error deleting asset</h2>
           <p class="text-gray-600 mb-4">Please try again or check server logs.</p>
-          <a href="/list" class="text-blue-600 hover:underline">Back to Asset List</a>
+          <a href="${getBaseUrl()}/list" class="text-blue-600 hover:underline">Back to Asset List</a>
         </div>
       </body>
       </html>
@@ -976,7 +954,7 @@ app.get('/delete/:id', async (req, res) => {
   }
 });
 
-// Browser-based QR code scanning
+// QR code scanning
 app.get('/scan', (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -1004,13 +982,12 @@ app.get('/scan', (req, res) => {
         <video id="video" width="100%" autoplay></video>
         <canvas id="canvas" style="display:none;"></canvas>
         <p id="output" class="text-center text-gray-600 mt-4">Scanning...</p>
-        <a href="/" class="block mt-4 text-blue-600 hover:underline text-center">Back to Home</a>
+        <a href="${getBaseUrl()}" class="block mt-4 text-blue-600 hover:underline text-center">Back to Home</a>
         <script>
           const video = document.getElementById('video');
           const canvas = document.getElementById('canvas');
           const ctx = canvas.getContext('2d');
           const output = document.getElementById('output');
-
           async function startCamera() {
             try {
               const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
@@ -1023,7 +1000,6 @@ app.get('/scan', (req, res) => {
               console.error('Camera access error:', err);
             }
           }
-
           function scan() {
             if (!video.videoWidth || !video.videoHeight) {
               requestAnimationFrame(scan);
@@ -1049,7 +1025,6 @@ app.get('/scan', (req, res) => {
               requestAnimationFrame(scan);
             }
           }
-
           startCamera();
         </script>
       </div>
@@ -1077,20 +1052,19 @@ app.post('/asset/verify/:id', async (req, res) => {
         <div class="text-center bg-white p-8 rounded-2xl shadow-lg">
           <h2 class="text-2xl font-bold text-red-600 mb-4">Asset not found</h2>
           <p class="text-gray-600 mb-4">The asset ID "${req.params.id}" does not exist.</p>
-          <a href="/" class="text-blue-600 hover:underline">Back to Home</a>
+          <a href="${getBaseUrl()}" class="text-blue-600 hover:underline">Back to Home</a>
         </div>
       </body>
       </html>
     `);
     return;
   }
-
   if (await bcrypt.compare(password, asset.assetPassword)) {
     console.log(`Asset ${req.params.id} verified successfully`);
     const sessionId = generateSessionId();
     sessions.set(sessionId, { assetId: req.params.id, verified: true });
     res.setHeader('Set-Cookie', `assetSessionId=${sessionId}; HttpOnly; Path=/asset/${req.params.id}; SameSite=None; Secure`);
-    res.redirect(`/asset/${req.params.id}?scan=true`);
+    res.redirect(`${getBaseUrl()}/asset/${req.params.id}?scan=true`);
   } else {
     console.log(`Asset verification failed for ${req.params.id}: Incorrect password`);
     res.status(401).send(`
@@ -1110,7 +1084,7 @@ app.post('/asset/verify/:id', async (req, res) => {
             <input type="password" name="password" placeholder="Enter Asset Password" required class="block w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500">
             <button type="submit" class="w-full py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">Submit</button>
           </form>
-          <a href="/" class="block mt-4 text-blue-600 hover:underline text-center">Back to Home</a>
+          <a href="${getBaseUrl()}" class="block mt-4 text-blue-600 hover:underline text-center">Back to Home</a>
         </div>
       </body>
       </html>
@@ -1118,12 +1092,12 @@ app.post('/asset/verify/:id', async (req, res) => {
   }
 });
 
-// Display asset details (mobile-friendly)
+// Display asset details
 app.get('/asset/:id', async (req, res) => {
   console.log(`Accessing asset with ID: ${req.params.id}, Query: ${JSON.stringify(req.query)}, Cookies: ${req.headers.cookie}`);
   const asset = await Asset.findOne({ name: req.params.id });
   if (!asset) {
-    console.log(`Asset not found for ID: ${req.params.id}.`);
+    console.log(`Asset not found for ID: ${req.params.id}`);
     res.status(404).send(`
       <!DOCTYPE html>
       <html lang="en">
@@ -1137,18 +1111,16 @@ app.get('/asset/:id', async (req, res) => {
         <div class="text-center bg-white p-8 rounded-2xl shadow-lg">
           <h2 class="text-2xl font-bold text-red-600 mb-4">Asset Not Found</h2>
           <p class="text-gray-600 mb-4">The asset ID "${req.params.id}" does not exist.</p>
-          <a href="/" class="text-blue-600 hover:underline">← Back to Home</a>
+          <a href="${getBaseUrl()}" class="text-blue-600 hover:underline">← Back to Home</a>
         </div>
       </body>
       </html>
     `);
     return;
   }
-
   const isAdmin = isAuthenticated(req);
   const assetSessionId = req.headers.cookie ? req.headers.cookie.split('assetSessionId=')[1]?.split(';')[0] : null;
   const isVerified = assetSessionId && sessions.has(assetSessionId) && sessions.get(assetSessionId).assetId === req.params.id;
-
   if (req.query.scan === 'true' && !isAdmin && !isVerified) {
     console.log(`Asset ${req.params.id} requires password verification`);
     res.send(`
@@ -1168,23 +1140,21 @@ app.get('/asset/:id', async (req, res) => {
             <input type="password" name="password" placeholder="Enter Asset Password" required class="block w-full p-3 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500">
             <button type="submit" class="w-full py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors">Submit</button>
           </form>
-          <a href="/" class="block mt-4 text-blue-600 hover:underline text-center">Back to Home</a>
+          <a href="${getBaseUrl()}" class="block mt-4 text-blue-600 hover:underline text-center">Back to Home</a>
         </div>
       </body>
       </html>
     `);
     return;
   }
-
   if (req.query.scan === 'true') {
     const now = new Date().toISOString();
     const userAgent = req.headers['user-agent'] || 'Unknown Device';
     asset.scanHistory.push({ timestamp: now, device: userAgent });
     await asset.save();
-    assets = await loadAssets(); // Refresh assets
+    assets = await loadAssets();
     console.log(`Recorded scan for asset ${req.params.id}: ${now}, Device: ${userAgent}`);
   }
-
   const scans = asset.scanHistory ? asset.scanHistory.length : 0;
   let scanHistoryHtml = '';
   if (asset.scanHistory && asset.scanHistory.length > 0) {
@@ -1212,7 +1182,6 @@ app.get('/asset/:id', async (req, res) => {
       </div>
     `;
   }
-
   res.send(`
     <!DOCTYPE html>
     <html lang="en">
@@ -1247,50 +1216,41 @@ app.get('/asset/:id', async (req, res) => {
     <body class="gradient-bg min-h-screen flex items-center justify-center py-12">
       <div class="container mx-auto max-w-lg bg-white p-8 rounded-2xl shadow-2xl">
         <h1 class="text-3xl font-bold text-gray-900 mb-8">📦 Asset Details</h1>
-        
         <div class="bg-green-50 p-4 rounded-lg mb-6 text-center text-green-700 font-semibold shadow-sm">
           Scanned ${scans} time(s)
         </div>
-        
         <div class="space-y-4">
           <div class="p-4 bg-white border border-gray-200 rounded-lg card-hover">
             <strong class="block text-sm font-medium text-gray-500 uppercase">Name</strong>
             <span class="text-lg font-semibold text-gray-800">${asset.id}</span>
           </div>
-          
           <div class="p-4 bg-white border border-gray-200 rounded-lg card-hover">
             <strong class="block text-sm font-medium text-gray-500 uppercase">Asset ID</strong>
             <span class="text-lg font-semibold text-gray-800">${asset.name}</span>
           </div>
-          
           <div class="p-4 bg-white border border-gray-200 rounded-lg card-hover">
             <strong class="block text-sm font-medium text-gray-500 uppercase">Location</strong>
             <span class="text-lg font-semibold text-gray-800">${asset.location}</span>
           </div>
-          
           ${asset.department ? `
           <div class="p-4 bg-white border border-gray-200 rounded-lg card-hover">
             <strong class="block text-sm font-medium text-gray-500 uppercase">Department</strong>
             <span class="text-lg font-semibold text-gray-800">${asset.department}</span>
           </div>
           ` : ''}
-          
           ${asset.desktopSetupDate ? `
           <div class="p-4 bg-white border border-gray-200 rounded-lg card-hover">
             <strong class="block text-sm font-medium text-gray-500 uppercase">Setup Date</strong>
             <span class="text-lg font-semibold text-gray-800">${new Date(asset.desktopSetupDate).toLocaleDateString()}</span>
           </div>
           ` : ''}
-          
           ${scanHistoryHtml}
-          
           <div class="text-center text-sm text-gray-500 mt-6">
             Generated by Asset QR Generator
           </div>
-          
           <div class="flex flex-col space-y-2">
-            <a href="/qr/all" class="block py-3 px-4 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-center font-semibold shadow-md">🖼 View All QR Codes</a>
-            <a href="/" class="block py-3 px-4 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-center font-semibold shadow-md">🏠 Back to Home</a>
+            <a href="${getBaseUrl()}/qr/all" class="block py-3 px-4 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-center font-semibold shadow-md">🖼 View All QR Codes</a>
+            <a href="${getBaseUrl()}" class="block py-3 px-4 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-center font-semibold shadow-md">🏠 Back to Home</a>
           </div>
         </div>
       </div>
@@ -1312,7 +1272,7 @@ app.get('/api/asset/:id', async (req, res) => {
 
 // Start server
 const server = app.listen(port, '0.0.0.0', () => {
-  const baseUrl = getNetworkIP();
+  const baseUrl = getBaseUrl();
   console.log(`Server running at: ${baseUrl}`);
   console.log(`Install as PWA: Open in Chrome, click "Add to Home Screen" (mobile) or "+" in address bar (desktop)`);
   console.log(`For Render.com deployment: Ensure BASE_URL is set to https://your-app.onrender.com in environment variables`);
@@ -1322,7 +1282,6 @@ const server = app.listen(port, '0.0.0.0', () => {
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
     console.error(`Port ${port} is already in use. Try a different port or kill the process.`);
-    console.error(`To find and kill: 'lsof -i :${port}' then 'kill <pid>' (Mac/Linux) or 'netstat -ano | findstr :${port}' then 'taskkill /PID <pid> /F' (Windows)`);
     process.exit(1);
   } else {
     console.error('Server error:', err);
