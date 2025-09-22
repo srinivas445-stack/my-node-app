@@ -1,24 +1,20 @@
 {
   "name": "asset-qr-generator",
   "version": "1.0.0",
-  "description": "",
+  "description": "An Express.js app to generate and manage QR codes for assets",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "dependencies": {
-    "bcrypt": "^6.0.0",
-    "bcryptjs": "^3.0.2",
-    "body-parser": "^2.2.0",
-    "dotenv": "^17.2.2",
-    "ejs": "^3.1.10",
-    "express": "^5.1.0",
-    "express-session": "^1.18.2",
-    "multer": "^2.0.2",
-    "qrcode": "^1.5.4"
-  }
+    "express": "^4.17.1",
+    "qrcode": "^1.5.0",
+    "body-parser": "^1.19.0",
+    "dotenv": "^10.0.0",
+    "bcrypt": "^5.0.1",
+    "cors": "^2.8.5",
+    "mongoose": "^6.0.0"
+  },
+  "author": "Your Name",
+  "license": "MIT"
 }
